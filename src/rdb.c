@@ -1508,8 +1508,10 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, robj *key) {
         /* Load every single element of the sorted set. */
         while(zsetlen--) {
             sds sdsele;
+            list *scores;
             double score;
             zskiplistNode *znode;
+            dictEntry *de, *existing;
 
             if ((sdsele = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL))
                 == NULL) return NULL;
@@ -1524,7 +1526,19 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, robj *key) {
             if (sdslen(sdsele) > maxelelen) maxelelen = sdslen(sdsele);
 
             znode = zslInsert(zs->zsl,score,sdsele);
-            dictAdd(zs->dict,sdsele,&znode->score);
+            de = dictAddRaw(zs->dict,sdsele,&existing);
+            if (existing) {
+                de = existing;
+                scores = dictGetVal(existing);
+            } else {
+                scores = listCreate();
+                listSetMatchMethod(scores,listMatchDouble);
+                listSetFreeMethod(scores,zfree);
+            }
+            double *pscore = zmalloc(sizeof(double));
+            *pscore = score;
+            scores = listAddNodeTail(scores,pscore);
+            dictSetVal(zs->dict,de,scores);
         }
 
         /* Convert *after* loading, since sorted sets are not stored ordered. */

@@ -1144,6 +1144,12 @@ void dictListDestructor(void *privdata, void *val)
     listRelease((list*)val);
 }
 
+int listMatchDouble(void *a, void *b) {
+    double *pa = a, *pb = b;
+
+    return (*pa == *pb);
+}
+
 int dictSdsKeyCompare(void *privdata, const void *key1,
         const void *key2)
 {
@@ -1281,7 +1287,7 @@ dictType zsetDictType = {
     NULL,                      /* val dup */
     dictSdsKeyCompare,         /* key compare */
     NULL,                      /* Note: SDS string shared & freed by skiplist */
-    NULL                       /* val destructor */
+    dictListDestructor         /* val destructor */
 };
 
 /* Db->dict, keys are sds strings, vals are Redis objects. */
@@ -4980,6 +4986,8 @@ int main(int argc, char **argv) {
         loadServerConfig(configfile,options);
         sdsfree(options);
     }
+
+    server.zset_max_ziplist_entries = 0;
 
     serverLog(LL_WARNING, "oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo");
     serverLog(LL_WARNING,

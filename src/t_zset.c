@@ -1261,7 +1261,9 @@ int zsetScore(robj *zobj, sds member, double *score) {
         zset *zs = zobj->ptr;
         dictEntry *de = dictFind(zs->dict, member);
         if (de == NULL) return C_ERR;
-        *score = *(double*)dictGetVal(de);
+        list *scores = dictGetVal(de);
+        /* TODO return list of scores */
+        *score = *(double*)listNodeValue(listFirst(scores));
     } else {
         serverPanic("Unknown sorted set encoding");
     }
@@ -1282,6 +1284,7 @@ int zsetScore(robj *zobj, sds member, double *score) {
  *            assume 0 as previous score.
  * ZADD_NX:   Perform the operation only if the element does not exist.
  * ZADD_XX:   Perform the operation only if the element already exist.
+ * ZADD_AX:   Append score intead of update it.
  *
  * When ZADD_INCR is used, the new score of the element is stored in
  * '*newscore' if 'newscore' is not NULL.
@@ -1316,6 +1319,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
     int incr = (*flags & ZADD_INCR) != 0;
     int nx = (*flags & ZADD_NX) != 0;
     int xx = (*flags & ZADD_XX) != 0;
+    int ax = (*flags & ZADD_AX) != 0;
     *flags = 0; /* We'll return our response flags. */
     double curscore;
 
@@ -1371,6 +1375,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
         zset *zs = zobj->ptr;
         zskiplistNode *znode;
         dictEntry *de;
+        list *scores;
 
         de = dictFind(zs->dict,ele);
         if (de != NULL) {
@@ -1379,7 +1384,8 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
                 *flags |= ZADD_NOP;
                 return 1;
             }
-            curscore = *(double*)dictGetVal(de);
+            scores = dictGetVal(de);
+            curscore = *(double*)listNodeValue(listFirst(scores));
 
             /* Prepare the score for the increment if needed. */
             if (incr) {
@@ -1391,20 +1397,41 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
                 if (newscore) *newscore = score;
             }
 
-            /* Remove and re-insert when score changes. */
-            if (score != curscore) {
+            if (ax) {
+                /* Append score */
+                if (!listSearchKey(scores, &score)) {
+                    double *pscore = zmalloc(sizeof(double));
+                    *pscore = score;
+                    scores = listAddNodeTail(scores,pscore);
+                    zslInsert(zs->zsl,score,sdsdup(ele));
+                    *flags |= ZADD_ADDED;
+                }
+            } else if (score != curscore) {
+                /* Remove and re-insert when score changes. */
                 znode = zslUpdateScore(zs->zsl,curscore,ele,score);
                 /* Note that we did not removed the original element from
                  * the hash table representing the sorted set, so we just
                  * update the score. */
-                dictGetVal(de) = &znode->score; /* Update score ptr. */
+                listNode *node = listSearchKey(scores,&curscore);
+                if (node) listDelNode(scores,node);
+                double *pscore = zmalloc(sizeof(double));
+                *pscore = score;
+                scores = listAddNodeTail(scores,pscore);
+                dictGetVal(de) = scores;
                 *flags |= ZADD_UPDATED;
             }
             return 1;
         } else if (!xx) {
             ele = sdsdup(ele);
             znode = zslInsert(zs->zsl,score,ele);
-            serverAssert(dictAdd(zs->dict,ele,&znode->score) == DICT_OK);
+
+            double *pscore = zmalloc(sizeof(double));
+            *pscore = score;
+            scores = listCreate();
+            listSetMatchMethod(scores,listMatchDouble);
+            listSetFreeMethod(scores,zfree);
+            scores = listAddNodeTail(scores,pscore);
+            serverAssert(dictAdd(zs->dict,ele,scores) == DICT_OK);
             *flags |= ZADD_ADDED;
             if (newscore) *newscore = score;
             return 1;
@@ -1431,12 +1458,26 @@ int zsetDel(robj *zobj, sds ele) {
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
         dictEntry *de;
+        list *scores;
         double score;
 
         de = dictUnlink(zs->dict,ele);
         if (de != NULL) {
-            /* Get the score in order to delete from the skiplist later. */
-            score = *(double*)dictGetVal(de);
+            /*
+             * CONFLICT:
+             * seems dictFreeUnlinkedEntry() and dictResize() don't use SDS string acturely.
+             * so, Delete from skiplist first.
+             */
+            scores = dictGetVal(de);
+            listIter li;
+            listNode *ln;
+            listRewind(scores,&li);
+            while ((ln = listNext(&li)) != NULL) {
+                score = *(double*)listNodeValue(ln);
+                /* Delete from skiplist. */
+                int retval = zslDelete(zs->zsl,score,ele,NULL);
+                serverAssert(retval);
+            }
 
             /* Delete from the hash table and later from the skiplist.
              * Note that the order is important: deleting from the skiplist
@@ -1444,10 +1485,6 @@ int zsetDel(robj *zobj, sds ele) {
              * which is shared between the skiplist and the hash table, so
              * we need to delete from the skiplist as the final step. */
             dictFreeUnlinkedEntry(zs->dict,de);
-
-            /* Delete from skiplist. */
-            int retval = zslDelete(zs->zsl,score,ele,NULL);
-            serverAssert(retval);
 
             if (htNeedsResize(zs->dict)) dictResize(zs->dict);
             return 1;
@@ -1504,11 +1541,15 @@ long zsetRank(robj *zobj, sds ele, int reverse) {
         zset *zs = zobj->ptr;
         zskiplist *zsl = zs->zsl;
         dictEntry *de;
+        list *scores;
         double score;
 
         de = dictFind(zs->dict,ele);
         if (de != NULL) {
-            score = *(double*)dictGetVal(de);
+            scores = dictGetVal(de);
+            /* TODO return list of ranks */
+            score = *(double*)listNodeValue(listFirst(scores));
+
             rank = zslGetRank(zsl,score,ele);
             /* Existing elements always have a rank. */
             serverAssert(rank != 0);
@@ -1552,6 +1593,7 @@ void zaddGenericCommand(client *c, int flags) {
         char *opt = c->argv[scoreidx]->ptr;
         if (!strcasecmp(opt,"nx")) flags |= ZADD_NX;
         else if (!strcasecmp(opt,"xx")) flags |= ZADD_XX;
+        else if (!strcasecmp(opt,"ax")) flags |= ZADD_AX;
         else if (!strcasecmp(opt,"ch")) flags |= ZADD_CH;
         else if (!strcasecmp(opt,"incr")) flags |= ZADD_INCR;
         else break;
@@ -2117,7 +2159,8 @@ int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
             zset *zs = op->subject->ptr;
             dictEntry *de;
             if ((de = dictFind(zs->dict,val->ele)) != NULL) {
-                *score = *(double*)dictGetVal(de);
+                list *scores = dictGetVal(de);
+                *score = *(double*)listNodeValue(listFirst(scores));
                 return 1;
             } else {
                 return 0;

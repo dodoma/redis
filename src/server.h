@@ -812,10 +812,10 @@ typedef struct client {
                                                * when the authenticated user
                                                * changes. */
     void *auth_callback_privdata; /* Private data that is passed when the auth
-                                   * changed callback is executed. Opaque for 
+                                   * changed callback is executed. Opaque for
                                    * Redis Core. */
     void *auth_module;      /* The module that owns the callback, which is used
-                             * to disconnect the client if the module is 
+                             * to disconnect the client if the module is
                              * unloaded for cleanup. Opaque for Redis Core.*/
 
     /* If this client is in tracking mode and this field is non zero,
@@ -1670,6 +1670,7 @@ void listTypeDelete(listTypeIterator *iter, listTypeEntry *entry);
 void listTypeConvert(robj *subject, int enc);
 void unblockClientWaitingData(client *c);
 void popGenericCommand(client *c, int where);
+int listMatchDouble(void *a, void *b);
 
 /* MULTI/EXEC/WATCH... */
 void unwatchAllKeys(client *c);
@@ -1844,6 +1845,7 @@ void ACLFreeUserAndKillClients(user *u);
 #define ZADD_INCR (1<<0)    /* Increment the score instead of setting it. */
 #define ZADD_NX (1<<1)      /* Don't touch elements not already existing. */
 #define ZADD_XX (1<<2)      /* Only touch elements already existing. */
+#define ZADD_AX (1<<7)      /* Append the score instead of update it. */
 
 /* Output flags. */
 #define ZADD_NOP (1<<3)     /* Operation not performed because of conditionals.*/
