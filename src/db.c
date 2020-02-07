@@ -642,7 +642,8 @@ void scanCallback(void *privdata, const dictEntry *de) {
     } else if (o->type == OBJ_ZSET) {
         sds sdskey = dictGetKey(de);
         key = createStringObject(sdskey,sdslen(sdskey));
-        val = createStringObjectFromLongDouble(*(double*)dictGetVal(de),0);
+        double *pscore = listNodeValue(listFirst((list*)de->v.val));
+        val = createStringObjectFromLongDouble(*(double*)pscore,0);
     } else {
         serverPanic("Type not handled in SCAN callback.");
     }

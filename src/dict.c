@@ -308,6 +308,7 @@ dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
      * more frequently. */
     ht = dictIsRehashing(d) ? &d->ht[1] : &d->ht[0];
     entry = zmalloc(sizeof(*entry));
+    entry->v.val = NULL;
     entry->next = ht->table[index];
     ht->table[index] = entry;
     ht->used++;

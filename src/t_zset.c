@@ -59,6 +59,27 @@
 #include "server.h"
 #include <math.h>
 
+#define zsetDictSetVal(entry, head, _score_)                \
+    do {                                                    \
+        if (entry) {                                        \
+            list *_scores = (entry)->v.val;                 \
+            if (!_scores) {                                 \
+            _scores = listCreate();                         \
+            listSetMatchMethod(_scores,listMatchDouble);    \
+            listSetFreeMethod(_scores,zfree);               \
+            (entry)->v.val = _scores;                       \
+            }                                               \
+            double *_pscore = zmalloc(sizeof(double));      \
+            *_pscore = (_score_);                           \
+            if ((head)) listAddNodeHead(_scores,_pscore);   \
+            else listAddNodeTail(_scores,_pscore);          \
+        }                                                   \
+    } while (0)
+
+#define zsetDictGetHeadVal(entry, _val_)                                \
+    do { (_val_) = *(double*)listNodeValue(listFirst((list*)(entry)->v.val)); } \
+    while (0)
+
 /*-----------------------------------------------------------------------------
  * Skiplist implementation of the low level API
  *----------------------------------------------------------------------------*/
@@ -1200,7 +1221,8 @@ void zsetConvert(robj *zobj, int encoding) {
                 ele = sdsnewlen((char*)vstr,vlen);
 
             node = zslInsert(zs->zsl,score,ele);
-            serverAssert(dictAdd(zs->dict,ele,&node->score) == DICT_OK);
+            dictEntry *de = dictAddRaw(zs->dict,ele,NULL);
+            zsetDictSetVal(de,false,score);
             zzlNext(zl,&eptr,&sptr);
         }
 
@@ -1385,7 +1407,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
                 return 1;
             }
             scores = dictGetVal(de);
-            curscore = *(double*)listNodeValue(listFirst(scores));
+            zsetDictGetHeadVal(de,curscore);
 
             /* Prepare the score for the increment if needed. */
             if (incr) {
@@ -1400,9 +1422,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
             if (ax) {
                 /* Append score */
                 if (!listSearchKey(scores, &score)) {
-                    double *pscore = zmalloc(sizeof(double));
-                    *pscore = score;
-                    scores = listAddNodeTail(scores,pscore);
+                    zsetDictSetVal(de,false,score);
                     zslInsert(zs->zsl,score,sdsdup(ele));
                     *flags |= ZADD_ADDED;
                 }
@@ -1414,24 +1434,15 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
                  * update the score. */
                 listNode *node = listSearchKey(scores,&curscore);
                 if (node) listDelNode(scores,node);
-                double *pscore = zmalloc(sizeof(double));
-                *pscore = score;
-                scores = listAddNodeTail(scores,pscore);
-                dictGetVal(de) = scores;
+                zsetDictSetVal(de,true,score);
                 *flags |= ZADD_UPDATED;
             }
             return 1;
         } else if (!xx) {
             ele = sdsdup(ele);
             znode = zslInsert(zs->zsl,score,ele);
-
-            double *pscore = zmalloc(sizeof(double));
-            *pscore = score;
-            scores = listCreate();
-            listSetMatchMethod(scores,listMatchDouble);
-            listSetFreeMethod(scores,zfree);
-            scores = listAddNodeTail(scores,pscore);
-            serverAssert(dictAdd(zs->dict,ele,scores) == DICT_OK);
+            de = dictAddRaw(zs->dict,ele,NULL);
+            zsetDictSetVal(de,false,score);
             *flags |= ZADD_ADDED;
             if (newscore) *newscore = score;
             return 1;
@@ -2345,7 +2356,8 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
                 if (j == setnum) {
                     tmp = zuiNewSdsFromValue(&zval);
                     znode = zslInsert(dstzset->zsl,score,tmp);
-                    dictAdd(dstzset->dict,tmp,&znode->score);
+                    dictEntry *de = dictAddRaw(dstzset->dict,tmp,NULL);
+                    zsetDictSetVal(de,false,score);
                     if (sdslen(tmp) > maxelelen) maxelelen = sdslen(tmp);
                 }
             }
@@ -2385,7 +2397,7 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
                      if (sdslen(tmp) > maxelelen) maxelelen = sdslen(tmp);
                     /* Update the element with its initial score. */
                     dictSetKey(accumulator, de, tmp);
-                    dictSetDoubleVal(de,score);
+                    zsetDictSetVal(de,false,score);
                 } else {
                     /* Update the score with the score of the new instance
                      * of the element found in the current sorted set.
@@ -2393,7 +2405,8 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
                      * Here we access directly the dictEntry double
                      * value inside the union as it is a big speedup
                      * compared to using the getDouble/setDouble API. */
-                    zunionInterAggregate(&existing->v.d,score,aggregate);
+                    double *psc = listNodeValue(listFirst((list*)existing->v.val));
+                    zunionInterAggregate(psc, score,aggregate);
                 }
             }
             zuiClearIterator(&src[i]);
@@ -2409,9 +2422,10 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
 
         while((de = dictNext(di)) != NULL) {
             sds ele = dictGetKey(de);
-            score = dictGetDoubleVal(de);
+            zsetDictGetHeadVal(de,score);
             znode = zslInsert(dstzset->zsl,score,ele);
-            dictAdd(dstzset->dict,ele,&znode->score);
+            dictEntry *nde = dictAddRaw(dstzset->dict,ele,NULL);
+            zsetDictSetVal(nde,false,score);
         }
         dictReleaseIterator(di);
         dictRelease(accumulator);
