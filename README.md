@@ -61,6 +61,15 @@
         - ZINCRBY
         - ZSCORE return the min score on ziplist
 
+  - useage
+
+  ![demonstrate useage](/demo.gif?raw=true "usage")
+
+### TODO
+
+Other zset commands also need 'ax' like parameter to perform special operation not
+just ZADD.
+
 ## use it as you own risk!
 
 [ORIGINAL README](README-ORI.md)
