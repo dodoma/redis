@@ -29,7 +29,8 @@
         - ZREVRANGEBYLEX
         - ZREVRANGEBYSCORE
 
-      * return the first or last match member rank.
+      * return the min or max match member rank in skiplist.
+      * return the min rank on ziplist
 
         - ZRANK
         - ZREVRANK
@@ -58,12 +59,7 @@
 
         - ZSCAN
         - ZINCRBY
-        - ZSCORE
-
-* Note that I don't modify zset's ziplist partly code(seems don't worth to do), so,
-  remember to set zset-max-ziplist-entries to 0 in your config file. Or, the 'ax'
-  parameter will take no effect when the sorted set members number little than
-  zset-max-ziplist-entries.
+        - ZSCORE return the min score on ziplist
 
 ## use it as you own risk!
 

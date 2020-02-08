@@ -1036,6 +1036,23 @@ unsigned char *zzlFind(unsigned char *zl, sds ele, double *score) {
     return NULL;
 }
 
+bool zzlMatch(unsigned char *zl, sds ele, double score) {
+    unsigned char *eptr = ziplistIndex(zl,0), *sptr;
+
+    while (eptr != NULL) {
+        sptr = ziplistNext(zl,eptr);
+        serverAssert(sptr != NULL);
+
+        if (ziplistCompare(eptr,(unsigned char*)ele,sdslen(ele))) {
+            if (score == zzlGetScore(sptr)) return true;
+        }
+
+        /* Move to next element. */
+        eptr = ziplistNext(zl,sptr);
+    }
+    return false;
+}
+
 /* Delete (element,score) pair from ziplist. Use local copy of eptr because we
  * don't want to modify the one given as argument. */
 unsigned char *zzlDelete(unsigned char *zl, unsigned char *eptr) {
@@ -1284,7 +1301,6 @@ int zsetScore(robj *zobj, sds member, double *score) {
         dictEntry *de = dictFind(zs->dict, member);
         if (de == NULL) return C_ERR;
         list *scores = dictGetVal(de);
-        /* TODO return list of scores */
         *score = *(double*)listNodeValue(listFirst(scores));
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -1372,8 +1388,17 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
                 if (newscore) *newscore = score;
             }
 
-            /* Remove and re-insert when score changed. */
-            if (score != curscore) {
+            if (ax) {
+                /* Append score */
+                if (!zzlMatch(zobj->ptr,ele,score)) {
+                    zobj->ptr = zzlInsert(zobj->ptr,ele,score);
+                    if (zzlLength(zobj->ptr) > server.zset_max_ziplist_entries ||
+                        sdslen(ele) > server.zset_max_ziplist_value)
+                        zsetConvert(zobj,OBJ_ENCODING_SKIPLIST);
+                    *flags |= ZADD_ADDED;
+                }
+            } else if (score != curscore) {
+                /* Remove and re-insert when score changed. */
                 zobj->ptr = zzlDelete(zobj->ptr,eptr);
                 zobj->ptr = zzlInsert(zobj->ptr,ele,score);
                 *flags |= ZADD_UPDATED;
@@ -1460,12 +1485,17 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
  * existed and was deleted, 0 otherwise (the element was not there). */
 int zsetDel(robj *zobj, sds ele) {
     if (zobj->encoding == OBJ_ENCODING_ZIPLIST) {
-        unsigned char *eptr;
+        int ret = 0;
+        unsigned char *eptr = ziplistIndex(zobj->ptr,0), *sptr;
 
-        if ((eptr = zzlFind(zobj->ptr,ele,NULL)) != NULL) {
-            zobj->ptr = zzlDelete(zobj->ptr,eptr);
-            return 1;
+        while (eptr != NULL && (sptr = ziplistNext(zobj->ptr,eptr)) != NULL) {
+            if (ziplistCompare(eptr,(unsigned char*)ele,sdslen(ele))) {
+                zobj->ptr = ziplistDelete(zobj->ptr,&eptr);
+                zobj->ptr = ziplistDelete(zobj->ptr,&eptr);
+                ret = 1;
+            } else eptr = ziplistNext(zobj->ptr,sptr);
         }
+        return ret;
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
         dictEntry *de;
@@ -1475,9 +1505,9 @@ int zsetDel(robj *zobj, sds ele) {
         de = dictUnlink(zs->dict,ele);
         if (de != NULL) {
             /*
-             * CONFLICT:
-             * seems dictFreeUnlinkedEntry() and dictResize() don't use SDS string acturely.
-             * so, Delete from skiplist first.
+             * comment CONFLICT:
+             * seems dictFreeUnlinkedEntry() and dictResize() don't use
+             * SDS string acturely. so, Delete from skiplist first.
              */
             scores = dictGetVal(de);
             listIter li;
